@@ -1,0 +1,31 @@
+services:
+  verify:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      VERIFY_REDIS_URL: redis://redis:6379/0
+      VERIFY_LOG_LEVEL: DEBUG
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  runner-python:
+    build:
+      context: .
+      dockerfile: containers/python/Dockerfile
+    image: phiacta-verify-runner-python:latest
+    profiles:
+      - runners
