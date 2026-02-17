@@ -116,7 +116,10 @@ class PhiactaClient:
         passed: bool,
         details: dict | None = None,
     ) -> dict:
-        """Update a claim's verification status in the backend.
+        """Update a claim's verification status via PUT /verification.
+
+        Uses the dedicated result-update endpoint so that a new
+        verification event is NOT dispatched (avoids infinite loops).
 
         Parameters
         ----------
@@ -139,33 +142,25 @@ class PhiactaClient:
         httpx.HTTPStatusError
             If the API returns a non-2xx status code.
         """
-        verification_result = {
+        verification_result: dict = {
             "verification_level": level,
             "passed": passed,
         }
         if details:
             verification_result.update(details)
 
-        resp = await self._client.get(f"/v1/claims/{claim_id}")
-        resp.raise_for_status()
-        claim_data = resp.json()
-        attrs = claim_data.get("attrs", {})
-        attrs["verification_level"] = level
-        attrs["verification_status"] = "verified" if passed else "failed"
-        attrs["verification_result"] = verification_result
+        status = "verified" if passed else "failed"
 
-        resp = await self._client.post(
-            f"/v1/claims/{claim_id}/verify",
+        resp = await self._client.put(
+            f"/v1/claims/{claim_id}/verification",
             json={
-                "code_content": attrs.get("verification_code", ""),
-                "runner_type": attrs.get("verification_runner_type", "python_script"),
+                "verification_level": level,
+                "verification_status": status,
+                "verification_result": verification_result,
             },
         )
-        # If the verify endpoint fails, fall back silently -- the review
-        # is what matters for the backend record.
-        if resp.status_code < 400:
-            return resp.json()
-        return claim_data
+        resp.raise_for_status()
+        return resp.json()
 
     # ------------------------------------------------------------------
     # Lifecycle
