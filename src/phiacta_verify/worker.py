@@ -16,6 +16,7 @@ from phiacta_verify.comparators import get_comparator
 from phiacta_verify.models.enums import ComparisonMethod, JobStatus, VerificationLevel
 from phiacta_verify.models.job import VerificationJob
 from phiacta_verify.models.result import OutputComparison, VerificationResult
+from phiacta_verify.phiacta_client import PhiactaClient
 from phiacta_verify.queue import JobQueue
 from phiacta_verify.runners import get_runner
 from phiacta_verify.sandbox import ContainerSandbox, SecurityPolicy
@@ -30,6 +31,7 @@ async def run_worker(
     queue: JobQueue,
     sandbox: ContainerSandbox,
     signer: ResultSigner,
+    phiacta_client: PhiactaClient | None = None,
     consumer_name: str = "worker-1",
 ) -> None:
     """Long-running coroutine that pulls jobs from the queue and processes them.
@@ -42,6 +44,8 @@ async def run_worker(
         Container sandbox used to execute code.
     signer:
         Ed25519 signer for stamping results.
+    phiacta_client:
+        Optional client for submitting reviews to the phiacta backend.
     consumer_name:
         Unique name for this consumer within the consumer group.
     """
@@ -60,7 +64,7 @@ async def run_worker(
 
             for msg_id, job in messages:
                 try:
-                    await process_job(queue, sandbox, signer, job)
+                    await process_job(queue, sandbox, signer, job, phiacta_client)
                 except Exception:
                     logger.exception("Failed to process job %s", job.id)
                     await queue.set_status(str(job.id), JobStatus.FAILED)
@@ -80,6 +84,7 @@ async def process_job(
     sandbox: ContainerSandbox,
     signer: ResultSigner,
     job: VerificationJob,
+    phiacta_client: PhiactaClient | None = None,
 ) -> None:
     """Execute a single verification job end-to-end.
 
@@ -224,3 +229,32 @@ async def process_job(
         passed,
         sandbox_result.execution_time_seconds,
     )
+
+    # Submit review and update verification status on the backend.
+    if phiacta_client is not None:
+        try:
+            verdict = "endorse" if result.passed else "dispute"
+            comment = f"Verification level: {result.verification_level.value}. "
+            if result.error_message:
+                comment += f"Error: {result.error_message}"
+            confidence = 1.0 if result.verification_level.value.startswith("L6") else 0.9
+            await phiacta_client.submit_review(
+                claim_id=result.claim_id,
+                verdict=verdict,
+                confidence=confidence,
+                comment=comment,
+            )
+            await phiacta_client.update_verification_status(
+                claim_id=result.claim_id,
+                level=result.verification_level.value,
+                passed=result.passed,
+                details={
+                    "execution_time_seconds": result.execution_time_seconds,
+                    "code_hash": result.code_hash,
+                    "runner_image": result.runner_image,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to submit review to backend for job %s", job.id
+            )

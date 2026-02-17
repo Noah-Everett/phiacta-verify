@@ -83,7 +83,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ---- Background worker -----------------------------------------------
     worker_task = asyncio.create_task(
-        run_worker(queue=queue, sandbox=sandbox, signer=signer),
+        run_worker(
+            queue=queue,
+            sandbox=sandbox,
+            signer=signer,
+            phiacta_client=phiacta_client,
+        ),
         name="verification-worker",
     )
 

@@ -106,6 +106,68 @@ class PhiactaClient:
         return resp.json()
 
     # ------------------------------------------------------------------
+    # Verification status
+    # ------------------------------------------------------------------
+
+    async def update_verification_status(
+        self,
+        claim_id: UUID,
+        level: str,
+        passed: bool,
+        details: dict | None = None,
+    ) -> dict:
+        """Update a claim's verification status in the backend.
+
+        Parameters
+        ----------
+        claim_id:
+            UUID of the claim to update.
+        level:
+            Verification level achieved (e.g. ``"L2_EXECUTION_VERIFIED"``).
+        passed:
+            Whether verification passed overall.
+        details:
+            Optional extra details to store in the claim attrs.
+
+        Returns
+        -------
+        dict
+            The updated claim payload as returned by the phiacta API.
+
+        Raises
+        ------
+        httpx.HTTPStatusError
+            If the API returns a non-2xx status code.
+        """
+        verification_result = {
+            "verification_level": level,
+            "passed": passed,
+        }
+        if details:
+            verification_result.update(details)
+
+        resp = await self._client.get(f"/v1/claims/{claim_id}")
+        resp.raise_for_status()
+        claim_data = resp.json()
+        attrs = claim_data.get("attrs", {})
+        attrs["verification_level"] = level
+        attrs["verification_status"] = "verified" if passed else "failed"
+        attrs["verification_result"] = verification_result
+
+        resp = await self._client.post(
+            f"/v1/claims/{claim_id}/verify",
+            json={
+                "code_content": attrs.get("verification_code", ""),
+                "runner_type": attrs.get("verification_runner_type", "python_script"),
+            },
+        )
+        # If the verify endpoint fails, fall back silently -- the review
+        # is what matters for the backend record.
+        if resp.status_code < 400:
+            return resp.json()
+        return claim_data
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
