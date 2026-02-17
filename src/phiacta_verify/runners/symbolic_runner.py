@@ -15,8 +15,9 @@ class SymbolicRunner(BaseRunner):
     its Python interface.  The code is placed at ``/code/symbolic.py``
     and executed with ``python /code/symbolic.py``.
 
-    Symbolic computations are deterministic by nature, so a successful
-    run (exit code 0) achieves ``L3_OUTPUT_VERIFIED_DETERMINISTIC``.
+    A successful run (exit code 0) achieves ``L2_EXECUTION_VERIFIED``.
+    L3 requires comparing outputs against expected values, which is
+    handled by the worker's comparator step, not the runner itself.
     """
 
     runner_type: RunnerType = RunnerType.SYMPY
@@ -64,8 +65,7 @@ class SymbolicRunner(BaseRunner):
     ) -> RunnerOutput:
         """Parse sandbox results for a symbolic computation.
 
-        An exit code of 0 yields ``L3_OUTPUT_VERIFIED_DETERMINISTIC``
-        because symbolic algebra engines produce deterministic results.
+        An exit code of 0 yields ``L2_EXECUTION_VERIFIED``.
         Any non-zero exit code indicates failure at ``L0_UNVERIFIED``.
         """
         if exit_code == 0:
@@ -73,7 +73,7 @@ class SymbolicRunner(BaseRunner):
                 outputs=output_files,
                 logs=stdout,
                 errors=stderr,
-                verification_level=VerificationLevel.L3_OUTPUT_VERIFIED_DETERMINISTIC,
+                verification_level=VerificationLevel.L2_EXECUTION_VERIFIED,
                 success=True,
             )
 

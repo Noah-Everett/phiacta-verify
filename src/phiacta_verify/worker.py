@@ -8,11 +8,12 @@ after the job has been fully processed (or has irrecoverably failed).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import UTC, datetime
 
 from phiacta_verify.comparators import get_comparator
-from phiacta_verify.models.enums import JobStatus, VerificationLevel
+from phiacta_verify.models.enums import ComparisonMethod, JobStatus, VerificationLevel
 from phiacta_verify.models.job import VerificationJob
 from phiacta_verify.models.result import OutputComparison, VerificationResult
 from phiacta_verify.queue import JobQueue
@@ -92,6 +93,15 @@ async def process_job(
     """
     await queue.set_status(str(job.id), JobStatus.RUNNING)
 
+    # ---- 0. Verify code integrity --------------------------------------------
+    actual_hash = hashlib.sha256(job.code_content.encode("utf-8")).hexdigest()
+    if actual_hash != job.code_hash:
+        logger.error(
+            "Job %s code_hash mismatch: expected %s, got %s",
+            job.id, job.code_hash, actual_hash,
+        )
+        raise ValueError(f"Code integrity check failed for job {job.id}")
+
     # ---- 1. Prepare execution ------------------------------------------------
     runner = get_runner(job.runner_type)
     prepared = runner.prepare(job)
@@ -111,6 +121,7 @@ async def process_job(
         code_files=prepared.code_files,
         data_files=prepared.data_files,
         policy=policy,
+        env_vars=prepared.env_vars or None,
     )
 
     # ---- 4. Parse output -----------------------------------------------------
@@ -141,10 +152,21 @@ async def process_job(
 
             expected_data = expected.content or b""
             comparator = get_comparator(expected.comparison_method)
+
+            # Map the generic tolerance field to comparator-specific kwargs.
+            compare_kwargs: dict = {}
+            if expected.tolerance is not None:
+                if expected.comparison_method == ComparisonMethod.NUMERICAL_TOLERANCE:
+                    compare_kwargs["atol"] = expected.tolerance
+                elif expected.comparison_method == ComparisonMethod.STATISTICAL:
+                    compare_kwargs["significance_level"] = expected.tolerance
+                elif expected.comparison_method == ComparisonMethod.PERCEPTUAL_HASH:
+                    compare_kwargs["threshold"] = expected.tolerance
+
             comp_result = comparator.compare(
                 expected_data,
                 actual_data,
-                tolerance=expected.tolerance,
+                **compare_kwargs,
             )
 
             output_comparisons.append(
@@ -162,11 +184,7 @@ async def process_job(
         level = VerificationLevel.L0_UNVERIFIED
         passed = False
     elif not runner_output.success:
-        # Distinguish syntax-only check from total failure.
-        if sandbox_result.exit_code != 0:
-            level = VerificationLevel.L1_SYNTAX_VERIFIED
-        else:
-            level = VerificationLevel.L0_UNVERIFIED
+        level = VerificationLevel.L0_UNVERIFIED
         passed = False
     elif output_comparisons and all(c.matched for c in output_comparisons):
         # All expected outputs matched -- use the runner's claimed level.
