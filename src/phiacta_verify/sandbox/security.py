@@ -20,6 +20,7 @@ class SecurityPolicy:
     cpu_quota: int = 100000  # 1 CPU
     pids_limit: int = 64
     tmpfs_size_mb: int = 256
+    output_tmpfs_size_mb: int = 64
     timeout_seconds: int = 120
     no_new_privileges: bool = True
     cap_drop: list[str] = field(default_factory=lambda: ["ALL"])
@@ -43,6 +44,8 @@ class SecurityPolicy:
             raise ValueError("cpu_quota must be a positive integer.")
         if self.tmpfs_size_mb <= 0:
             raise ValueError("tmpfs_size_mb must be a positive integer.")
+        if self.output_tmpfs_size_mb <= 0:
+            raise ValueError("output_tmpfs_size_mb must be a positive integer.")
 
     def to_container_config(self) -> dict:
         """Convert to Docker SDK ``host_config`` parameters.
@@ -61,5 +64,8 @@ class SecurityPolicy:
             "pids_limit": self.pids_limit,
             "security_opt": ["no-new-privileges"] if self.no_new_privileges else [],
             "cap_drop": self.cap_drop,
-            "tmpfs": {"/tmp": f"size={self.tmpfs_size_mb}m,noexec,nosuid"},
+            "tmpfs": {
+                "/tmp": f"size={self.tmpfs_size_mb}m,nosuid",
+                "/output": f"size={self.output_tmpfs_size_mb}m,noexec,nosuid",
+            },
         }

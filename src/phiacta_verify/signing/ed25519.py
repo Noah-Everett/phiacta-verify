@@ -3,6 +3,7 @@
 import json
 import base64
 import logging
+import os
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -85,11 +86,21 @@ class ResultSigner:
         ).decode()
 
     def save_private_key(self, path: str) -> None:
-        """Persist the private key to *path* in PKCS8 PEM format."""
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        """Persist the private key to *path* in PKCS8 PEM format.
+
+        The file is created with mode 0o600 (owner read/write only) to
+        prevent other users on the system from reading the key material.
+        """
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
         pem = self._private_key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption(),
         )
-        Path(path).write_bytes(pem)
+        # Write with restrictive permissions: owner read/write only.
+        fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, pem)
+        finally:
+            os.close(fd)

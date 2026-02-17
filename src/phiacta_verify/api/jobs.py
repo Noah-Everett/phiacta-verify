@@ -31,20 +31,28 @@ class SubmitJobRequest(BaseModel):
 
     claim_id: UUID = Field(description="Identifier of the scientific claim.")
     runner_type: RunnerType = Field(description="Execution environment to use.")
-    code_content: str = Field(description="Source code to execute in the sandbox.")
+    code_content: str = Field(
+        description="Source code to execute in the sandbox.",
+        max_length=2_097_152,  # 2 MB hard limit at schema level
+    )
     environment_spec: dict | None = Field(
         default=None,
         description="Optional environment specification (pip requirements, etc.).",
     )
     expected_outputs: list[ExpectedOutput] | None = Field(
         default=None,
+        max_length=50,
         description="Artifacts to compare against after execution.",
     )
     resource_limits: ResourceLimits | None = Field(
         default=None,
         description="Sandbox resource constraints. Defaults apply if omitted.",
     )
-    submitted_by: str = Field(description="User or service that submitted the job.")
+    submitted_by: str = Field(
+        description="User or service that submitted the job.",
+        min_length=1,
+        max_length=256,
+    )
 
 
 class SubmitJobResponse(BaseModel):

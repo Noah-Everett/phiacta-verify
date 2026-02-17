@@ -14,8 +14,5 @@ class Settings(BaseSettings):
     signing_key_path: str = "keys/ed25519.pem"
     max_concurrent_jobs: int = 4
     max_code_size_bytes: int = 1_048_576  # 1 MB
-    container_timeout_seconds: int = 300
-    container_memory_limit: str = "512m"
-    container_cpu_limit: float = 1.0
-    container_network_disabled: bool = True
     log_level: str = "INFO"
+    cors_allowed_origins: list[str] = ["http://localhost:3000"]

@@ -16,26 +16,31 @@ class ResourceLimits(BaseModel):
     cpu_seconds: int = Field(
         default=120,
         gt=0,
+        le=600,
         description="Maximum CPU time in seconds.",
     )
     memory_mb: int = Field(
         default=2048,
         gt=0,
+        le=8192,
         description="Maximum resident memory in megabytes.",
     )
     disk_mb: int = Field(
         default=256,
         gt=0,
+        le=1024,
         description="Maximum writable disk space in megabytes.",
     )
     timeout_seconds: int = Field(
         default=120,
         gt=0,
+        le=600,
         description="Wall-clock timeout for the entire execution.",
     )
     pids_limit: int = Field(
         default=64,
         gt=0,
+        le=256,
         description="Maximum number of concurrent processes/threads.",
     )
 

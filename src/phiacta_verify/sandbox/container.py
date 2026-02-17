@@ -14,10 +14,21 @@ from pathlib import Path
 
 import docker
 import docker.errors
+import requests.exceptions
 
 from phiacta_verify.sandbox.security import SecurityPolicy
 
 logger = logging.getLogger(__name__)
+
+# Docker images that the sandbox is allowed to run.  Any image not in this
+# set is rejected before a container is ever created.
+_ALLOWED_IMAGES: frozenset[str] = frozenset({
+    "phiacta-verify-runner-python:latest",
+    "phiacta-verify-runner-r:latest",
+    "phiacta-verify-runner-julia:latest",
+    "phiacta-verify-runner-lean4:latest",
+    "phiacta-verify-runner-symbolic:latest",
+})
 
 # Maximum bytes of stdout/stderr captured from the container.
 _MAX_OUTPUT_BYTES: int = 64 * 1024  # 64 KB
@@ -27,6 +38,20 @@ _ANSI_ESCAPE_RE: re.Pattern[str] = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 # Control characters to strip (everything except newline \n, carriage return \r, tab \t).
 _CONTROL_CHAR_RE: re.Pattern[str] = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+# Environment variable names that must never be forwarded to sandbox
+# containers because they can alter interpreter behaviour in dangerous ways
+# (e.g. executing arbitrary code at startup, loading shared libraries).
+_BLOCKED_ENV_VARS: frozenset[str] = frozenset({
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONSTARTUP", "PYTHONPATH",
+    "PYTHONINSPECT", "PYTHONBREAKPOINT", "RUBYOPT", "PERL5OPT",
+    "NODE_OPTIONS", "JAVA_TOOL_OPTIONS", "R_PROFILE", "R_PROFILE_USER",
+    "R_ENVIRON", "R_ENVIRON_USER", "JULIA_LOAD_PATH", "JULIA_DEPOT_PATH",
+    "BASH_ENV", "ENV", "CDPATH", "GLOBIGNORE", "PATH", "HOME",
+})
+
+# Maximum total bytes of output files collected from /output/.
+_MAX_OUTPUT_FILES_BYTES: int = 32 * 1024 * 1024  # 32 MB
 
 
 def _sanitize_output(raw: str) -> str:
@@ -71,12 +96,23 @@ def _make_tar(files: dict[str, str | bytes]) -> bytes:
 
 
 def _extract_tar(data: bytes) -> dict[str, bytes]:
-    """Extract an in-memory tar archive into a dict of path -> content."""
+    """Extract an in-memory tar archive into a dict of path -> content.
+
+    Rejects members with absolute paths or path-traversal components
+    (``..``) to prevent a malicious container from crafting archives that
+    would reference files outside the expected directory.
+    """
     result: dict[str, bytes] = {}
     buf = io.BytesIO(data)
     with tarfile.open(fileobj=buf, mode="r") as tar:
         for member in tar.getmembers():
             if not member.isfile():
+                continue
+            # Reject path traversal and absolute paths.
+            if member.name.startswith("/") or ".." in member.name.split("/"):
+                logger.warning(
+                    "Skipping tar member with suspicious path: %s", member.name
+                )
                 continue
             extracted = tar.extractfile(member)
             if extracted is not None:
@@ -121,6 +157,7 @@ class ContainerSandbox:
         code_files: dict[str, str],
         data_files: dict[str, bytes] | None = None,
         policy: SecurityPolicy | None = None,
+        env_vars: dict[str, str] | None = None,
     ) -> SandboxResult:
         """Execute *command* inside a sandboxed container and return the result.
 
@@ -140,6 +177,8 @@ class ContainerSandbox:
         policy:
             Security policy governing resource limits.  Defaults to a
             fresh ``SecurityPolicy()`` with all defaults.
+        env_vars:
+            Optional environment variables to set inside the container.
 
         Returns
         -------
@@ -150,6 +189,12 @@ class ContainerSandbox:
         if policy is None:
             policy = SecurityPolicy()
 
+        if image not in _ALLOWED_IMAGES:
+            raise ValueError(
+                f"Image {image!r} is not in the allowed image list. "
+                f"Allowed: {sorted(_ALLOWED_IMAGES)}"
+            )
+
         container = None
         code_dir: tempfile.TemporaryDirectory[str] | None = None
         data_dir: tempfile.TemporaryDirectory[str] | None = None
@@ -158,6 +203,9 @@ class ContainerSandbox:
             # ---- 1. Write code files to a temp directory for bind mount ----
             code_dir = tempfile.TemporaryDirectory(prefix="phiacta_code_")
             for relative_path, source in code_files.items():
+                # Reject path traversal in file names.
+                if relative_path.startswith("/") or ".." in relative_path.split("/"):
+                    raise ValueError(f"Path traversal in code_files key: {relative_path!r}")
                 dest = Path(code_dir.name) / relative_path
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(source, encoding="utf-8")
@@ -169,6 +217,8 @@ class ContainerSandbox:
             if data_files:
                 data_dir = tempfile.TemporaryDirectory(prefix="phiacta_data_")
                 for relative_path, raw in data_files.items():
+                    if relative_path.startswith("/") or ".." in relative_path.split("/"):
+                        raise ValueError(f"Path traversal in data_files key: {relative_path!r}")
                     dest = Path(data_dir.name) / relative_path
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(raw)
@@ -178,7 +228,19 @@ class ContainerSandbox:
             host_config = policy.to_container_config()
             host_config["binds"] = binds
 
-            # ---- 4. Create container (not yet started) ---------------------
+            # ---- 4. Filter environment variables ----------------------------
+            safe_env: dict[str, str] = {}
+            if env_vars:
+                for key, value in env_vars.items():
+                    upper_key = key.upper()
+                    if upper_key in _BLOCKED_ENV_VARS:
+                        logger.warning(
+                            "Blocked dangerous env var: %s", key
+                        )
+                        continue
+                    safe_env[key] = value
+
+            # ---- 5. Create container (not yet started) ---------------------
             container = await asyncio.to_thread(
                 self._client.containers.create,
                 image=image,
@@ -187,6 +249,7 @@ class ContainerSandbox:
                 detach=True,
                 stdin_open=False,
                 tty=False,
+                environment=safe_env,
                 # Flatten host_config into keyword arguments accepted by
                 # the high-level Docker SDK ``create`` method.
                 **host_config,
@@ -212,7 +275,8 @@ class ContainerSandbox:
             except (
                 docker.errors.APIError,
                 ConnectionError,
-                Exception,  # requests.exceptions.ReadTimeout is not always importable
+                requests.exceptions.ReadTimeout,
+                requests.exceptions.ConnectionError,
             ) as exc:
                 # Timeout or communication error – forcefully kill container.
                 logger.warning(
@@ -251,8 +315,21 @@ class ContainerSandbox:
                 archive_stream, _stat = await asyncio.to_thread(
                     container.get_archive, "/output/"
                 )
-                # get_archive returns an iterator of chunks; collect them.
-                archive_bytes = b"".join(chunk for chunk in archive_stream)
+                # get_archive returns an iterator of chunks; collect them
+                # but abort if the archive exceeds our size limit.
+                chunks: list[bytes] = []
+                total_size = 0
+                for chunk in archive_stream:
+                    total_size += len(chunk)
+                    if total_size > _MAX_OUTPUT_FILES_BYTES:
+                        logger.warning(
+                            "Output archive from container %s exceeds %d bytes limit, truncating",
+                            container.short_id,
+                            _MAX_OUTPUT_FILES_BYTES,
+                        )
+                        break
+                    chunks.append(chunk)
+                archive_bytes = b"".join(chunks)
                 output_files = _extract_tar(archive_bytes)
 
                 # Strip the leading "output/" prefix from extracted paths so
