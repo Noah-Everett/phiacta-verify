@@ -2,15 +2,23 @@ services:
   verify:
     build: .
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       VERIFY_REDIS_URL: redis://redis:6379/0
       VERIFY_LOG_LEVEL: DEBUG
+      VERIFY_CORS_ALLOWED_ORIGINS: '["http://localhost:3001"]'
     depends_on:
       redis:
         condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./src:/app/src
+    command: >
+      uvicorn phiacta_verify.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --reload-dir /app/src
 
   redis:
     image: redis:7-alpine
@@ -28,4 +36,4 @@ services:
       dockerfile: containers/python/Dockerfile
     image: phiacta-verify-runner-python:latest
     profiles:
-      - runners
+      - build-runners
